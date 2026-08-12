@@ -57,7 +57,7 @@ jobs:
             printf 'raw_size=%s\n' "$(stat -c '%s' "${gsi_img}")"
             printf 'e2fsck_status=%s\n' "${e2fsck_status}"
           } > "${output_dir}/metadata.txt"
-          if (( e2fsck_status >= 8 )); then
+          if (( e2fsck_status != 0 )); then
             exit "${e2fsck_status}"
           fi
 
