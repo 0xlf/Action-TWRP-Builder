@@ -14,7 +14,7 @@ jobs:
       GSI_MD5: 185714f0746c6935950e95f91c1e6d8d
       GSI_NAME: lineage-21.0-20260614-UNOFFICIAL-arm64_bvN.img.gz
       GSI_SHA1: fd8a7dd6b4dfb2d1ab37efc81b1ebc037266084d
-      GSI_URL: https://downloads.sourceforge.net/project/andyyan-gsi/lineage-21-pre-qpr2-td/lineage-21.0-20260614-UNOFFICIAL-arm64_bvN.img.gz
+      GSI_URL: https://pilotfiber.dl.sourceforge.net/project/andyyan-gsi/lineage-21-pre-qpr2-td/lineage-21.0-20260614-UNOFFICIAL-arm64_bvN.img.gz
 
     steps:
       - name: 检出审计工程
@@ -67,4 +67,3 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
-
