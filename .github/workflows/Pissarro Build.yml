@@ -1,0 +1,190 @@
+name: 编译 TWRP pissarro
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: twrp-pissarro-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.event.repository.owner.id == github.event.sender.id
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    env:
+      ARTIFACT_DIR: ${{ github.workspace }}/artifacts
+      SOURCE_DIR: ${{ github.workspace }}/workspace
+
+    steps:
+      - name: 检出构建配置
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: 释放托管 runner 磁盘
+        if: runner.environment == 'github-hosted'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          df -h /
+          for target_path in \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/share/powershell \
+            /opt/hostedtoolcache/CodeQL \
+            /opt/hostedtoolcache/go \
+            /usr/share/swift \
+            /usr/lib/google-cloud-sdk; do
+            if [[ -e "${target_path}" ]]; then
+              sudo rm -rf -- "${target_path}"
+            fi
+          done
+          sudo apt-get clean
+          df -h /
+
+      - name: 检查 runner 资源
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          available_kib="$(df -Pk "${GITHUB_WORKSPACE}" | awk 'NR == 2 {print $4}')"
+          available_gib="$((available_kib / 1024 / 1024))"
+          memory_kib="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+          memory_gib="$((memory_kib / 1024 / 1024))"
+          echo "可用磁盘：${available_gib} GiB"
+          echo "物理内存：${memory_gib} GiB"
+          (( available_gib >= 35 )) || { echo '磁盘不足 35 GiB，停止构建。'; exit 1; }
+          (( memory_gib >= 12 )) || { echo '内存不足 12 GiB，停止构建。'; exit 1; }
+
+      - name: 安装系统依赖
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg \
+            gperf imagemagick lib32ncurses-dev lib32readline-dev lib32z1-dev libc6-dev-i386 \
+            libgl1-mesa-dev liblz4-tool libncurses-dev libssl-dev libxml2-utils lzop \
+            pngcrush python3 rsync schedtool squashfs-tools unzip x11proto-core-dev \
+            xsltproc zip zlib1g-dev
+          sudo apt-get clean
+
+      - name: 安装 Java 11
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: zulu
+          java-version: "11"
+
+      - name: 安装并校验 repo
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          readonly repo_version='2.54'
+          readonly repo_sha256='6cba294d6218bbd4a1500598207b3979c752c7a122aef9429e4d7fef688833b5'
+          mkdir -p "${RUNNER_TEMP}/bin"
+          curl --fail --location --retry 3 --silent --show-error \
+            "https://storage.googleapis.com/git-repo-downloads/repo-${repo_version}" \
+            --output "${RUNNER_TEMP}/bin/repo"
+          printf '%s  %s\n' "${repo_sha256}" "${RUNNER_TEMP}/bin/repo" \
+            | sha256sum --check --status
+          chmod 0755 "${RUNNER_TEMP}/bin/repo"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+
+      - name: 初始化并同步 TWRP 源码
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "${SOURCE_DIR}" "${ARTIFACT_DIR}"
+          cd "${SOURCE_DIR}"
+          git config --global user.name 'TWRP Builder'
+          git config --global user.email 'twrp-builder@users.noreply.github.com'
+          git config --global color.ui false
+          repo init \
+            --depth=1 \
+            --no-clone-bundle \
+            --repo-url=https://github.com/GerritCodeReview/git-repo.git \
+            --repo-rev=v2.54 \
+            -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git \
+            -b twrp-12.1
+          mkdir -p .repo/local_manifests
+          install -m 0644 "${GITHUB_WORKSPACE}/devices/pissarro.xml" \
+            .repo/local_manifests/pissarro.xml
+          set -o pipefail
+          repo sync \
+            --current-branch \
+            --detach \
+            --fail-fast \
+            --force-sync \
+            --no-clone-bundle \
+            --no-tags \
+            --jobs=4 2>&1 | tee "${ARTIFACT_DIR}/sync.log"
+          repo manifest --revision-as-HEAD > "${ARTIFACT_DIR}/repo-manifest.xml"
+          df -h "${SOURCE_DIR}" | tee "${ARTIFACT_DIR}/disk-after-sync.txt"
+          du -sh "${SOURCE_DIR}" | tee -a "${ARTIFACT_DIR}/disk-after-sync.txt"
+          available_kib="$(df -Pk "${SOURCE_DIR}" | awk 'NR == 2 {print $4}')"
+          (( available_kib >= 10 * 1024 * 1024 )) \
+            || { echo '同步后可用磁盘不足 10 GiB，停止编译。'; exit 1; }
+
+      - name: 校验设备树约束
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          board_config="${SOURCE_DIR}/device/xiaomi/pissarro/BoardConfig.mk"
+          grep -Eq '^BOARD_USES_RECOVERY_AS_BOOT[[:space:]]*:=[[:space:]]*true' "${board_config}"
+          grep -Eq '^TARGET_NO_RECOVERY[[:space:]]*:=[[:space:]]*true' "${board_config}"
+          grep -Eq '^TW_NO_FASTBOOT_BOOT[[:space:]]*:=[[:space:]]*true' "${board_config}"
+
+      - name: 编译 boot 镜像
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "${SOURCE_DIR}"
+          export ALLOW_MISSING_DEPENDENCIES=true
+          set +u
+          source build/envsetup.sh
+          lunch twrp_pissarro-eng
+          set -u
+          set -o pipefail
+          mka bootimage -j4 2>&1 | tee "${ARTIFACT_DIR}/build.log"
+
+      - name: 严格校验产物
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          image_path="${SOURCE_DIR}/out/target/product/pissarro/boot.img"
+          test -s "${image_path}"
+          image_size="$(stat -c '%s' "${image_path}")"
+          image_magic="$(LC_ALL=C head -c 8 "${image_path}")"
+          [[ "${image_magic}" == 'ANDROID!' ]]
+          (( image_size <= 134217728 ))
+          install -m 0644 "${image_path}" "${ARTIFACT_DIR}/twrp-pissarro.img"
+          cd "${ARTIFACT_DIR}"
+          sha256sum twrp-pissarro.img > twrp-pissarro.img.sha256
+          unpack_dir="$(mktemp -d)"
+          unpack_output="$(python3 "${SOURCE_DIR}/system/tools/mkbootimg/unpack_bootimg.py" \
+            --boot_img twrp-pissarro.img --out "${unpack_dir}" --format=mkbootimg)"
+          printf '%s\n' "${unpack_output}" > twrp-pissarro.img.metadata.txt
+          for expected_value in \
+            '--header_version 2' \
+            '--pagesize 0x00000800' \
+            '--kernel_offset 0x40080000' \
+            '--ramdisk_offset 0x51100000' \
+            '--tags_offset 0x47c80000' \
+            '--dtb_offset 0x0000000047c80000' \
+            'bootopt=64S3,32N2,64N2'; do
+            grep -Fq -- "${expected_value}" <<< "${unpack_output}"
+          done
+          test -s "${unpack_dir}/kernel"
+          test -s "${unpack_dir}/ramdisk"
+          test -s "${unpack_dir}/dtb"
+
+      - name: 上传镜像与日志
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: twrp-pissarro-${{ github.run_number }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14

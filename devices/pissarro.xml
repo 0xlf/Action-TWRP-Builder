@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+  <remote name="github-pissarro" fetch="https://github.com/" />
+  <project
+      name="TeamWin/android_device_xiaomi_pissarro"
+      path="device/xiaomi/pissarro"
+      remote="github-pissarro"
+      revision="962f972bca23593ed763f650977c64274b4e9f25"
+      clone-depth="1" />
+</manifest>
