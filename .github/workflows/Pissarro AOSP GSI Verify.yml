@@ -1,0 +1,70 @@
+name: 校验 pissarro AOSP 14 GSI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      GSI_NAME: aosp-arm64-ab-vanilla-14.0-20240816.img.xz
+      GSI_SIZE: "828267276"
+      GSI_URL: https://github.com/ponces/treble_aosp/releases/download/v2024.08.16/aosp-arm64-ab-vanilla-14.0-20240816.img.xz
+
+    steps:
+      - name: 检出审计工程
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: 下载并校验压缩包
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          gsi_xz="${RUNNER_TEMP}/${GSI_NAME}"
+          curl --fail --location --retry 5 --retry-all-errors \
+            --connect-timeout 30 --output "${gsi_xz}" "${GSI_URL}"
+          test "$(stat -c '%s' "${gsi_xz}")" = "${GSI_SIZE}"
+          xz --test "${gsi_xz}"
+
+      - name: 解压并只读检查 system 镜像
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          output_dir="${GITHUB_WORKSPACE}/gsi-report"
+          gsi_xz="${RUNNER_TEMP}/${GSI_NAME}"
+          gsi_img="${RUNNER_TEMP}/${GSI_NAME%.xz}"
+          mkdir -p "${output_dir}"
+          xz --decompress --keep "${gsi_xz}"
+
+          file "${gsi_img}" | tee "${output_dir}/file.txt"
+          set +e
+          e2fsck -fn "${gsi_img}" > "${output_dir}/e2fsck.txt" 2>&1
+          e2fsck_status=$?
+          set -e
+          dumpe2fs -h "${gsi_img}" > "${output_dir}/dumpe2fs.txt" 2>&1
+          {
+            sha256sum "${gsi_xz}"
+            sha256sum "${gsi_img}"
+          } > "${output_dir}/sha256.txt"
+          {
+            printf 'source=%s\n' "${GSI_URL}"
+            printf 'variant=arm64-ab-vanilla\n'
+            printf 'android_version=14\n'
+            printf 'compressed_size=%s\n' "$(stat -c '%s' "${gsi_xz}")"
+            printf 'raw_size=%s\n' "$(stat -c '%s' "${gsi_img}")"
+            printf 'e2fsck_status=%s\n' "${e2fsck_status}"
+          } > "${output_dir}/metadata.txt"
+          if (( e2fsck_status >= 8 )); then
+            exit "${e2fsck_status}"
+          fi
+
+      - name: 上传校验报告
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: aosp14-arm64-ab-vanilla-report
+          path: gsi-report/
+          if-no-files-found: error
+          retention-days: 30
