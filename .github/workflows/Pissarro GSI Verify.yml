@@ -1,0 +1,70 @@
+name: 校验 LineageOS 21 pissarro GSI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      GSI_MD5: 185714f0746c6935950e95f91c1e6d8d
+      GSI_NAME: lineage-21.0-20260614-UNOFFICIAL-arm64_bvN.img.gz
+      GSI_SHA1: fd8a7dd6b4dfb2d1ab37efc81b1ebc037266084d
+      GSI_URL: https://downloads.sourceforge.net/project/andyyan-gsi/lineage-21-pre-qpr2-td/lineage-21.0-20260614-UNOFFICIAL-arm64_bvN.img.gz
+
+    steps:
+      - name: 检出审计工程
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: 下载并核对 SourceForge 校验值
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          gsi_gz="${RUNNER_TEMP}/${GSI_NAME}"
+          curl --fail --location --retry 5 --retry-all-errors \
+            --connect-timeout 30 --user-agent 'Mozilla/5.0' \
+            --output "${gsi_gz}" "${GSI_URL}"
+          printf '%s  %s\n' "${GSI_SHA1}" "${gsi_gz}" | sha1sum --check
+          printf '%s  %s\n' "${GSI_MD5}" "${gsi_gz}" | md5sum --check
+          gzip --test "${gsi_gz}"
+
+      - name: 解压并检查 system 镜像
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          output_dir="${GITHUB_WORKSPACE}/gsi-artifact"
+          gsi_gz="${RUNNER_TEMP}/${GSI_NAME}"
+          gsi_img="${RUNNER_TEMP}/${GSI_NAME%.gz}"
+          mkdir -p "${output_dir}"
+          gzip --decompress --keep "${gsi_gz}"
+
+          file "${gsi_img}" | tee "${output_dir}/file.txt"
+          e2fsck -fn "${gsi_img}" | tee "${output_dir}/e2fsck.txt"
+          dumpe2fs -h "${gsi_img}" 2>&1 | tee "${output_dir}/dumpe2fs.txt"
+          install -m 0644 "${gsi_gz}" "${output_dir}/${GSI_NAME}"
+          {
+            sha256sum "${gsi_gz}"
+            sha256sum "${gsi_img}"
+          } > "${output_dir}/sha256.txt"
+          {
+            printf 'source=%s\n' "${GSI_URL}"
+            printf 'source_sha1=%s\n' "${GSI_SHA1}"
+            printf 'source_md5=%s\n' "${GSI_MD5}"
+            printf 'variant=arm64_bvN\n'
+            printf 'compressed_size=%s\n' "$(stat -c '%s' "${gsi_gz}")"
+            printf 'raw_size=%s\n' "$(stat -c '%s' "${gsi_img}")"
+          } > "${output_dir}/metadata.txt"
+
+      - name: 上传经校验的 GSI
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lineage-21-20260614-arm64-bvN
+          path: gsi-artifact/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
