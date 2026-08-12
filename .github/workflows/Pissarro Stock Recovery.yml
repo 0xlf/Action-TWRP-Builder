@@ -1,0 +1,79 @@
+name: 提取 pissarro 原厂恢复镜像
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  extract:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      ROM_MD5: f92004a27b49e489d74cbbc924365905
+      ROM_NAME: pissarro_images_OS1.0.24.0.TKTCNXM_20260313.0000.00_13.0_cn_f92004a27b.tgz
+      ROM_URL: https://cdn-ota.azureedge.net/OS1.0.24.0.TKTCNXM/pissarro_images_OS1.0.24.0.TKTCNXM_20260313.0000.00_13.0_cn_f92004a27b.tgz
+
+    steps:
+      - name: 检出审计工程
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: 释放 runner 磁盘
+        shell: bash
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h "${RUNNER_TEMP}"
+
+      - name: 从独立镜像下载并校验 fastboot ROM
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rom_path="${RUNNER_TEMP}/${ROM_NAME}"
+          curl --fail --location --retry 5 --retry-all-errors \
+            --connect-timeout 30 --output "${rom_path}" "${ROM_URL}"
+          printf '%s  %s\n' "${ROM_MD5}" "${rom_path}" | md5sum --check
+          printf '%s  %s\n' "$(sha256sum "${rom_path}" | cut -d ' ' -f 1)" \
+            "${ROM_NAME}" > "${RUNNER_TEMP}/rom.sha256"
+
+      - name: 提取关键恢复镜像
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rom_path="${RUNNER_TEMP}/${ROM_NAME}"
+          extract_dir="${RUNNER_TEMP}/extracted"
+          output_dir="${GITHUB_WORKSPACE}/stock-recovery"
+          mkdir -p "${extract_dir}" "${output_dir}"
+          tar -tzf "${rom_path}" > "${output_dir}/archive-contents.txt"
+
+          for image_name in \
+            boot.img \
+            dtbo.img \
+            vbmeta.img \
+            vbmeta_system.img \
+            vbmeta_vendor.img; do
+            entry="$(grep -E "/images/${image_name}$" \
+              "${output_dir}/archive-contents.txt" | head -n 1)"
+            test -n "${entry}"
+            tar -xzf "${rom_path}" -C "${extract_dir}" "${entry}"
+            install -m 0644 "${extract_dir}/${entry}" "${output_dir}/${image_name}"
+          done
+
+          install -m 0644 "${RUNNER_TEMP}/rom.sha256" "${output_dir}/rom.sha256"
+          sha256sum "${output_dir}"/*.img > "${output_dir}/images.sha256"
+          {
+            printf 'source=%s\n' "${ROM_URL}"
+            printf 'source_type=independent_mirror\n'
+            printf 'archive=%s\n' "${ROM_NAME}"
+            printf 'archive_md5=%s\n' "${ROM_MD5}"
+            printf 'device=pissarro/pissarropro\n'
+            printf 'firmware=OS1.0.24.0.TKTCNXM\n'
+          } > "${output_dir}/source.txt"
+
+      - name: 上传关键恢复镜像
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pissarro-OS1.0.24.0-stock-recovery
+          path: stock-recovery/
+          if-no-files-found: error
+          retention-days: 7
